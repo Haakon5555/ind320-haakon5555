@@ -1,0 +1,5 @@
+# Starter dependencies; versions must be checked when the app is first run.
+# Streamlit is not installed in the checked local environments.
+pandas
+matplotlib
+streamlit
