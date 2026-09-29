@@ -1,5 +1,4 @@
-# Starter dependencies; versions must be checked when the app is first run.
-# Streamlit is not installed in the checked local environments.
-pandas
-matplotlib
-streamlit
+# Versions the app was tested with. Pandas 2.3.3 is allowed because it supports Python 3.14.
+pandas>=2.3.2,<2.4
+matplotlib==3.10.5
+streamlit==1.64.0
