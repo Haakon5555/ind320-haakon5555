@@ -10,7 +10,6 @@ from data_loader import load_data
 st.set_page_config(page_title="IND320 - Plots", layout="wide")
 st.title("Reservoir plots")
 st.write("Weekly values for Norway (NO 0).")
-
 # Same cached data as on the Data page.
 reservoirs = load_data()
 norway = reservoirs.loc[
@@ -97,7 +96,11 @@ if selected_column == combined_option or selected_column in measurements:
     axes[-1].set_xlabel("Date")
     for ax in axes:
         # The x-axis covers the whole chosen period.
-        ax.set_xlim(start_date, end_date)
+        # Convert the dates to the numbers Matplotlib uses for axis limits.
+        ax.set_xlim(
+            float(mdates.date2num(start_date)),
+            float(mdates.date2num(end_date)),
+        )
         ax.grid(alpha=0.2)
 
     # Let Matplotlib pick a few date labels, so they do not overlap.
