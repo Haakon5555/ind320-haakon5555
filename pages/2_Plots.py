@@ -1,20 +1,14 @@
-"""Plots page: choose a column and a range of months, and plot the data for Norway."""
+"""Plots for every available area number of the selected NVE area type."""
 
 import matplotlib.dates as mdates
 from matplotlib.figure import Figure
-import pandas as pd
 import streamlit as st
 
-from data_loader import load_data
+from data_loader import select_data
 
 st.set_page_config(page_title="IND320 - Plots", layout="wide")
 st.title("Reservoir plots")
-st.write("Weekly values for Norway (NO 0).")
-# Same cached data as on the Data page.
-reservoirs = load_data()
-norway = reservoirs.loc[
-    (reservoirs["area_type"] == "NO") & (reservoirs["area_number"] == 0)
-]
+selected_data, area_type, start_date, end_date = select_data()
 
 # The five measurement columns: title, unit and what to multiply with.
 # Fractions are multiplied by 100 to show percent.
@@ -26,26 +20,15 @@ measurements = {
     "change_in_filling_ratio": ("Weekly change", "percentage points", 100),
 }
 
-# Drop-down menu with every CSV column, plus one choice for all columns together.
+# Keep the column menu from part 1, including the dates and labels.
 combined_option = "All columns together"
-columns = [combined_option, *reservoirs.columns]
+columns = [combined_option, *selected_data.columns]
 selected_column = st.selectbox(
     "Column", options=columns, index=columns.index("filling_ratio"),
     format_func=lambda name: name if name == combined_option else name.replace("_", " ").capitalize(),
 )
 
-# Slider with all months written as YYYY-MM. Both handles start on the first month.
-months = norway["date"].dt.strftime("%Y-%m").drop_duplicates().tolist()
-start_month, end_month = st.select_slider(
-    "Months", options=months, value=(months[0], months[0]),
-    help="Move the two handles to choose the first and last month.",
-)
-
-# Keep the weeks from the start of the first month to the end of the last month.
-start_date = pd.Period(start_month, freq="M").start_time
-end_date = pd.Period(end_month, freq="M").end_time
-selected_data = norway.loc[norway["date"].between(start_date, end_date)]
-st.caption(f"{len(selected_data)} weekly observations from {start_month} to {end_month}")
+st.caption(f"{len(selected_data)} observations across {selected_data['area_number'].nunique()} areas")
 
 if selected_column == combined_option or selected_column in measurements:
     # The figure is made with Figure() and shown with st.pyplot(fig) further down.
@@ -57,22 +40,22 @@ if selected_column == combined_option or selected_column in measurements:
             (["capacity_twh", "stored_energy_twh"], "Energy (TWh)"),
             (["change_in_filling_ratio"], "Weekly change\n(percentage points)"),
         ]
-        fig = Figure(figsize=(7, 8))
+        fig = Figure(figsize=(10, 9))
         axes = fig.subplots(3, 1, sharex=True)
-        fig.suptitle("Norway: all measurements")
+        fig.suptitle(f"{area_type} areas, all measurements")
         for ax, (group, axis_label) in zip(axes, groups):
-            for column in group:
-                title, unit, multiplier = measurements[column]
-                ax.plot(
-                    selected_data["date"], selected_data[column] * multiplier,
-                    linewidth=1.6, label=title,
-                    # Dashed line for last week's level, since it lies close to this week's.
-                    linestyle="--" if column == "previous_week_filling_ratio" else "-",
-                    # Show the points when there are few of them.
-                    marker="o" if len(selected_data) <= 16 else None,
-                )
+            for color, (number, area) in enumerate(selected_data.groupby("area_number")):
+                for position, column in enumerate(group):
+                    title, unit, multiplier = measurements[column]
+                    ax.plot(
+                        area["date"], area[column] * multiplier,
+                        color=f"C{color}", linewidth=1.2,
+                        label=f"{area_type} {number}, {title}",
+                        linestyle="--" if position else "-",
+                        marker="o" if len(area) <= 16 else None,
+                    )
             ax.set_ylabel(axis_label)
-            ax.legend(loc="best", fontsize=8)
+            ax.legend(loc="best", fontsize=7, ncol=2)
         # Zero line in the bottom panel, to see if the level went up or down.
         axes[-1].axhline(0, color="gray", linewidth=0.7, linestyle=":")
         st.caption(
@@ -81,16 +64,18 @@ if selected_column == combined_option or selected_column in measurements:
         )
     else:
         # One measurement alone, with its own unit on the y-axis.
-        fig = Figure(figsize=(7, 4.5))
+        fig = Figure(figsize=(10, 4.5))
         ax = fig.subplots()
         axes = [ax]
         title, unit, multiplier = measurements[selected_column]
-        ax.plot(
-            selected_data["date"], selected_data[selected_column] * multiplier,
-            color="tab:blue", linewidth=1.6,
-            marker="o" if len(selected_data) <= 16 else None,
-        )
-        ax.set_title(f"Norway: {title}")
+        for number, area in selected_data.groupby("area_number"):
+            ax.plot(
+                area["date"], area[selected_column] * multiplier,
+                linewidth=1.6, label=f"{area_type} {number}",
+                marker="o" if len(area) <= 16 else None,
+            )
+        ax.legend(title="Area", ncol=3, fontsize=8)
+        ax.set_title(title)
         ax.set_ylabel(f"{title} ({unit})")
 
     axes[-1].set_xlabel("Date")
@@ -114,15 +99,15 @@ if selected_column == combined_option or selected_column not in measurements:
     # Dates and labels are shown in a table. A line plot of them would not make sense.
     if selected_column == combined_option:
         st.subheader("Dates and labels")
-        metadata_columns = [column for column in reservoirs.columns if column not in measurements]
+        metadata_columns = [column for column in selected_data.columns if column not in measurements]
     else:
         st.info("This column is a date or a label, so the values are shown in a table.")
-        metadata_columns = ["date"] if selected_column == "date" else ["date", selected_column]
+        metadata_columns = list(dict.fromkeys(["date", "area_type", "area_number", selected_column]))
     metadata = selected_data[metadata_columns].copy()
     if "next_publication_date" in metadata.columns:
-        # Year 0001 is a placeholder in the file, so there is no real date.
+        # Year 0001 is an API placeholder, not a real date.
         metadata["next_publication_date"] = metadata["next_publication_date"].replace(
             "0001-01-01T00:00:00", "Not reported"
         )
-        st.caption("'Not reported' means that the file has no real publication date.")
+        st.caption("'Not reported' means that the API has no real publication date.")
     st.dataframe(metadata, hide_index=True, width="stretch")

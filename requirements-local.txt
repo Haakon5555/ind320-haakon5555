@@ -1,0 +1,5 @@
+# Additional notebook/database dependencies for the existing data_analysis environment.
+# Keep requirements.txt for the Streamlit deployment.
+pyspark==3.5.1
+cassandra-driver==3.30.1
+pymongo==4.19.0

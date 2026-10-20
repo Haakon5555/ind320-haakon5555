@@ -1,74 +1,58 @@
-"""Data page: table with the first month of data, one row per CSV column."""
+"""One row per available area, with weekly trends from the NVE API."""
 
 import pandas as pd
 import streamlit as st
 
-from data_loader import load_data
+from data_loader import select_data
 
 st.set_page_config(page_title="IND320 - Data", layout="wide")
 st.title("Reservoir data")
+selected_data, area_type, start_date, end_date = select_data()
+st.write("Choose the area type and period in the sidebar. Each row is one area.")
 
-# load_data is cached, so the CSV is not read again on every rerun.
-reservoirs = load_data()
+measurements = {
+    "filling_ratio": ("Filling level (%)", 100),
+    "capacity_twh": ("Capacity (TWh)", 1),
+    "stored_energy_twh": ("Stored energy (TWh)", 1),
+    "previous_week_filling_ratio": ("Previous week (%)", 100),
+    "change_in_filling_ratio": ("Weekly change (pp)", 100),
+}
 
-# The file has nine areas. NO 0 is the total for Norway, and the app shows that one.
-norway = reservoirs.loc[
-    (reservoirs["area_type"] == "NO") & (reservoirs["area_number"] == 0)
-]
-
-# Find the first month in the data (January 1995) and keep only those weeks.
-first_month = norway["date"].min().to_period("M")
-month_data = norway.loc[norway["date"].dt.to_period("M") == first_month]
-st.subheader(f"Norway (NO 0), {first_month.strftime('%B %Y')}")
-st.write("Each row in the table is one column from the CSV file.")
-st.caption("Weeks: " + ", ".join(month_data["date"].dt.strftime("%d %b %Y")))
-
-# These five columns are measurements. Only they get a line chart.
-measurement_columns = [
-    "filling_ratio", "capacity_twh", "stored_energy_twh",
-    "previous_week_filling_ratio", "change_in_filling_ratio",
-]
-
-# Build the table with one row for each CSV column.
+# Each list is a time series for one area, ordered from the oldest week.
 rows = []
-for column in month_data.columns:
-    values = month_data[column]
+for number, area in selected_data.groupby("area_number"):
+    row = {"Area": f"{area_type} {number}", "Weeks": len(area)}
+    for column, (label, multiplier) in measurements.items():
+        row[label] = (area[column] * multiplier).tolist()
+    rows.append(row)
 
-    # Make a text version of the values to show in the table.
-    if column == "date":
-        display_values = values.dt.strftime("%Y-%m-%d").tolist()
-    elif column == "next_publication_date":
-        # Year 0001 is a placeholder in the file, so there is no real date.
-        display_values = ["Not reported" if str(v).startswith("0001-") else str(v) for v in values]
-    elif pd.api.types.is_numeric_dtype(values):
-        display_values = [f"{v:.6g}" for v in values]
-    else:
-        display_values = values.astype(str).tolist()
-
-    rows.append({
-        "Column": column,
-        # LineChartColumn needs a list of numbers. The other rows get no chart.
-        "Trend": values.tolist() if column in measurement_columns else None,
-        "Weekly values": display_values,
-    })
-
-# LineChartColumn draws the list of numbers as a small line chart in each row.
 st.dataframe(
     pd.DataFrame(rows),
     column_config={
-        "Column": st.column_config.TextColumn(width="medium"),
-        "Weekly values": st.column_config.ListColumn(width="medium"),
-        "Trend": st.column_config.LineChartColumn(
-            "Weekly trend", width=130,
-            help="The four weekly values in date order. Each row has its own scale.",
-        ),
+        label: st.column_config.LineChartColumn(
+            label, width="medium",
+            help="Weekly values in date order. Each small chart has its own scale.",
+        )
+        for label, multiplier in measurements.values()
     },
     hide_index=True,
-    height=430,
     width="stretch",
 )
 st.caption(
-    "Filling values are fractions (0.8 = 80%). Capacity and stored energy are in TWh. "
-    "Each small chart has its own scale. "
-    "'Not reported' means that the file has no real publication date."
+    "The small charts show the five measurements for each area. "
+    "Each chart has its own scale. Use Plots to compare areas on a shared scale. "
+    "A weekly change of 1 pp means one percentage point."
 )
+
+with st.expander("Weekly values and dates"):
+    # Preserve the original values. Year 0001 is not a real publication date.
+    table = selected_data.copy()
+    table["next_publication_date"] = table["next_publication_date"].replace(
+        "0001-01-01T00:00:00", "Not reported"
+    )
+    st.dataframe(table, hide_index=True, width="stretch")
+    st.caption(
+        "The table uses the API's fractions, so 0.8 means 80%. "
+        "The date identifies the week. ISO year and ISO week are kept as reported. "
+        "Not reported replaces the API's year 0001 placeholder."
+    )

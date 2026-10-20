@@ -1,0 +1,28 @@
+# Local database for IND320 part 2. Start with: docker compose up -d
+name: ind320
+services:
+  cassandra:
+    image: cassandra:4.1@sha256:29c6091a2c4e568104e407152f7a449a06a9b6564cbdee6da1b421dcb6681328
+    container_name: ind320-cassandra
+    ports:
+      - "127.0.0.1:9042:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: IND320
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_NUM_TOKENS: "16"
+      MAX_HEAP_SIZE: 1G
+      HEAP_NEWSIZE: 256M
+    mem_limit: 3g
+    cpus: 2
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "SELECT release_version FROM system.local;"]
+      interval: 20s
+      timeout: 15s
+      start_period: 90s
+      retries: 10
+volumes:
+  cassandra_data:
+    name: ind320_cassandra_data
