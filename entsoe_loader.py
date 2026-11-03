@@ -163,7 +163,7 @@ def load_api_flows(token, source_dir=Path("data/entsoe"), years=(2024, 2025)):
                     except (ValueError, TypeError, OverflowError):
                         raise ValueError(
                             f"Invalid or incomplete ENTSO-E data: {out_area} to {in_area}, "
-                            f"{year}. No CSV fallback or database update was performed."
+                            f"{year}. No database update was performed."
                         ) from None
                     if not cached:
                         # Preserve the response, never the authenticated request URL.
