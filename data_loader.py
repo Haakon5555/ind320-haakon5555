@@ -121,16 +121,6 @@ def transfer_choices():
 
 
 @st.cache_data(ttl=600)
-def transfer_sources(connection, year):
-    """Identify the retrieval method saved with the selected year's documents."""
-    rows = transfer_collection().find(
-        {"connection": connection, "year": int(year)}, {"source_method": 1}
-    )
-    # Earlier documents were created from the original website exports.
-    return sorted({row.get("source_method", "ENTSO-E website CSV exports") for row in rows})
-
-
-@st.cache_data(ttl=600)
 def transfer_totals(connection, year):
     """Sum interval energy in MongoDB before sending the annual totals to the app."""
     rows = transfer_collection().aggregate([

@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 from pymongo.errors import PyMongoError
 
-from data_loader import transfer_choices, transfer_totals, transfer_months, transfer_sources
+from data_loader import transfer_choices, transfer_totals, transfer_months
 
 st.set_page_config(page_title="IND320 - Transfers", layout="wide")
 st.title("Cross-border electricity transfers")
@@ -28,7 +28,6 @@ try:
         )
         years = sorted({year for name, year in choices if name == connection})
         year = st.selectbox("Year", years, index=len(years) - 1)
-        sources = transfer_sources(connection, year)
         totals = transfer_totals(connection, year)
         amounts = [totals.get(direction, 0.0) for direction in ("Import", "Export")]
         if sum(amounts) > 0:
@@ -92,7 +91,7 @@ with st.expander("Data source and preparation"):
         "and 2025 are represented as hourly mean MW in UTC. "
         "Nine international connections are included."
     )
-    st.write("Retrieval method for this connection and year: " + ", ".join(sources) + ".")
+    st.write("The data are downloaded from the ENTSO-E REST API.")
     st.write(
         "The notebook checks coverage, duplicates and missing values, writes the "
         "data to Cassandra through Spark, reads it back and calculates interval energy. "

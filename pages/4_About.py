@@ -26,9 +26,7 @@ st.caption("The notebook in the repository has the analysis, the work log and th
 st.markdown(
     "Transfers shows physical electricity flows from "
     "[ENTSO-E Transparency Platform](https://transparency.entsoe.eu/). "
-    "The notebook uses the REST API when a token is configured, or the preserved "
-    "annual CSV exports while access is pending. The Transfers source panel shows "
-    "the method used for the selected connection and year. Spark stores and reads the data through "
+    "The notebook downloads the data from the ENTSO-E REST API. Spark stores and reads the data through "
     "Cassandra, then the notebook uploads the prepared records to MongoDB. "
     "The app queries MongoDB directly and caches query results for ten minutes."
 )
