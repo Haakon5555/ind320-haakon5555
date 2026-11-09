@@ -4,7 +4,7 @@ import streamlit as st
 
 st.set_page_config(page_title="IND320 - About", layout="wide")
 st.title("About this project")
-st.write("IND320 Data to Decision, autumn 2026. Project work, part 2.")
+st.write("IND320 Data to Decision, autumn 2026. Project work, parts 1–3.")
 st.write(
     "The app shows weekly data about Norwegian water reservoirs: "
     "filling level, capacity, stored energy and weekly change. "
@@ -30,3 +30,24 @@ st.markdown(
     "Cassandra, then the notebook uploads the prepared records to MongoDB. "
     "The app queries MongoDB directly and caches query results for ten minutes."
 )
+
+
+st.subheader("Weather and data quality")
+st.markdown(
+    "Weather comes from the [Open-Meteo Historical Weather API]"
+    "(https://open-meteo.com/en/docs/historical-weather-api), using "
+    "[ERA5](https://doi.org/10.24381/cds.adbb2d47) from the Copernicus Climate Change Service. "
+    "[Open-Meteo software citation](https://doi.org/10.5281/zenodo.7970649). "
+    "Weather data are provided under CC BY 4.0."
+)
+st.write(
+    "The notebook samples 1000 locations separately in each of three course region groups "
+    "and five electricity price areas. The app averages all locations within the selected area. "
+    "Weather values are reanalysis estimates, not independent station observations."
+)
+st.write(
+    "Precipitation flags use a DCT high-pass filter and robust SPC limits. "
+    "Temperature anomalies use Local Outlier Factor. STL and a spectrogram "
+    "describe weekly reservoir filling. Flagged values are kept for inspection."
+)
+st.caption("Part 3 was developed with AI assistance. The notebook documents the methods, checks and limitations.")

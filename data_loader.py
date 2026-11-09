@@ -44,6 +44,11 @@ def load_data():
     return data.sort_values(["date", "area_type", "area_number"]).reset_index(drop=True)
 
 
+def _save_control(widget_key, saved_key):
+    """Copy a changed widget value before a rerun or page transition."""
+    st.session_state[saved_key] = st.session_state[widget_key]
+
+
 def select_data():
     """Download once, then use the same area and period choices on both pages."""
     try:
@@ -57,9 +62,11 @@ def select_data():
     chosen_type = st.session_state.get("chosen_area_type", "NO")
     if chosen_type not in area_types:
         chosen_type = area_types[0]
+    st.session_state["area_type_control"] = chosen_type
     with st.sidebar:
         area_type = st.radio(
-            "Area type", area_types, index=area_types.index(chosen_type),
+            "Area type", area_types, key="area_type_control",
+            on_change=_save_control, args=("area_type_control", "chosen_area_type"),
             help="EL is electricity price areas, NO is Norway, VASS is water regions.",
         )
         months = reservoirs["date"].dt.strftime("%Y-%m").drop_duplicates().tolist()
@@ -68,7 +75,8 @@ def select_data():
         if any(month not in months for month in saved_months):
             saved_months = (months[0], months[-1])
         start_month, end_month = st.select_slider(
-            "Months", options=months, value=saved_months,
+            "Months", options=months, value=saved_months, key="period_control",
+            on_change=_save_control, args=("period_control", "chosen_months"),
             help="Both end months are included. NVE supplies the full history, then the app selects this period.",
         )
         st.caption(
@@ -145,3 +153,31 @@ def transfer_months(connection, year, months):
     if not data.empty:
         data["start_utc"] = pd.to_datetime(data["start_utc"], utc=True)
     return data
+
+
+def _save_analysis_area(area_type, widget_key):
+    st.session_state["chosen_area"] = (area_type, st.session_state[widget_key])
+
+
+def select_analysis_area(selected, area_type):
+    """Share one area number between the reservoir and weather analysis pages."""
+    numbers = sorted(int(number) for number in selected["area_number"].unique())
+    saved_type, saved_number = st.session_state.get("chosen_area", ("EL", 3))
+    number = saved_number if saved_type == area_type and saved_number in numbers else numbers[0]
+    widget_key = f"analysis_area_{area_type}"
+    st.session_state[widget_key] = number
+    number = st.sidebar.selectbox(
+        "Area", numbers,
+        format_func=lambda value: f"NO{value}" if area_type == "EL" else f"{area_type} {value}",
+        key=widget_key,
+        on_change=_save_analysis_area, args=(area_type, widget_key),
+    )
+    st.session_state["chosen_area"] = (area_type, number)
+    if area_type == "EL":
+        region = f"NO{number}"
+    elif area_type == "VASS":
+        # The course uses the three historical reporting groups.
+        region = {1: "East", 2: "West", 3: "North"}.get(number)
+    else:
+        region = None
+    return selected.loc[selected["area_number"].eq(number)].copy(), number, region
