@@ -3,3 +3,5 @@
 pyspark==3.5.1
 cassandra-driver==3.30.1
 pymongo==4.19.0
+# Region geometry and point sampling in the part 3 notebook.
+geopandas==1.2.0
