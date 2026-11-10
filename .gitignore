@@ -4,3 +4,6 @@ __pycache__/
 .ipynb_checkpoints/
 .env
 .streamlit/secrets.toml
+
+# Local raw API responses and quota bookkeeping.
+data/weather/raw/
