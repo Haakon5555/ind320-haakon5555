@@ -5,8 +5,6 @@ import gzip
 import hashlib
 import json
 import time
-import tempfile
-import fcntl
 
 import numpy as np
 import pandas as pd
@@ -16,184 +14,114 @@ WEATHER_URL = "https://archive-api.open-meteo.com/v1/archive"
 WEATHER_VARIABLES = ["temperature_2m", "precipitation"]
 
 
-def _request_weather(params, cache_dir, progress=None):
-    """Reuse an unchanged JSON response, or make one quota-limited request."""
+def _request_weather(params, cache_dir):
+    """Reuse a saved JSON response, or request one batch from Open-Meteo."""
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    # The request parameters identify which saved response can be reused.
     request_key = hashlib.sha256(json.dumps(params, sort_keys=True).encode()).hexdigest()
     response_path = cache_dir / f"{request_key}.json.gz"
     if response_path.exists():
         with gzip.open(response_path, "rt") as source:
             return json.load(source)
 
-    days = (pd.Timestamp(params["end_date"]) - pd.Timestamp(params["start_date"])).days + 1
-    locations = len(params["latitude"].split(","))
-    cost = locations * max(1, days / 14 * len(WEATHER_VARIABLES) / 10)
-    # Leave headroom for interactive requests from the documentation page.
-    limits = [(60, 500), (3600, 4500), (86400, 9000)]
-    ledger_path = cache_dir / "quota.json"
-    last_notice = 0
+    # Status 429 means the quota is used up. The minute limit clears quickly,
+    # so wait and try again a few times before giving up.
     for attempt in range(4):
-        while True:
-            # A file lock keeps notebook and local app requests from sharing a quota unsafely.
-            with (cache_dir / "quota.lock").open("a") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
-                now = time.time()
-                ledger = json.loads(ledger_path.read_text()) if ledger_path.exists() else []
-                ledger = [entry for entry in ledger if now - entry[0] < 86400]
-                delay = 0
-                for window, limit in limits:
-                    if window == 3600:
-                        # Server hours reset near the UTC hour, with a client seconds offset.
-                        # Allow 60 seconds for reset and retain 180 seconds for in-flight calls.
-                        hour_start = int((now - 60) // 3600) * 3600
-                        used = sum(amount for stamp, amount in ledger if stamp >= hour_start - 180)
-                        if used + cost > limit:
-                            delay = max(delay, hour_start + 3662 - now)
-                        continue
-                    entries = [entry for entry in ledger if now - entry[0] < window]
-                    used = sum(entry[1] for entry in entries)
-                    for stamp, amount in entries:
-                        if used + cost <= limit:
-                            break
-                        delay = max(delay, stamp + window - now + 2)
-                        used -= amount
-                if delay == 0:
-                    ledger.append([now, cost])
-                    temporary = ledger_path.with_suffix(".tmp")
-                    temporary.write_text(json.dumps(ledger))
-                    temporary.replace(ledger_path)
-                    break
-            if progress and now - last_notice > 55:
-                progress(f"API quota pause: about {delay / 60:.0f} minutes remaining.")
-                last_notice = now
-            time.sleep(min(delay, 30))
-        response = None
-        try:
-            response = requests.get(WEATHER_URL, params=params, timeout=(15, 180))
-            if response.status_code == 429:
-                raise RuntimeError("Open-Meteo quota reached. Saved batches are safe; resume later.")
-            if 500 <= response.status_code < 600:
-                response.raise_for_status()
-            response.raise_for_status()
-            payload = response.json()
-            if isinstance(payload, dict) and payload.get("error"):
-                raise ValueError(payload.get("reason", "Open-Meteo returned an error."))
-            # Preserve the response body without changing its contents.
-            with tempfile.NamedTemporaryFile(dir=cache_dir, suffix=".tmp", delete=False) as target:
-                temporary = Path(target.name)
-                target.write(gzip.compress(response.content))
-            temporary.replace(response_path)
-            return payload
-        except (requests.Timeout, requests.ConnectionError, requests.HTTPError):
-            if attempt == 3 or (response is not None and 400 <= response.status_code < 500):
-                raise
-            time.sleep(2 ** attempt)
-    raise RuntimeError("The weather request did not complete.")
+        response = requests.get(WEATHER_URL, params=params, timeout=(15, 180))
+        if response.status_code != 429:
+            break
+        time.sleep(60)
+    if response.status_code == 429:
+        raise RuntimeError("Open-Meteo quota reached. Saved batches are kept, so continue later.")
+    response.raise_for_status()
+    # Save the response body unchanged, so an interrupted download can resume.
+    response_path.write_bytes(gzip.compress(response.content))
+    return response.json()
+
+
+def weather_cache_file(region, start_date, end_date, cache_dir="data/weather"):
+    """Path of the NPZ file with complete data for one region and period."""
+    start, end = pd.Timestamp(start_date), pd.Timestamp(end_date)
+    return Path(cache_dir) / f"{region}_{start:%Y%m%d}_{end:%Y%m%d}.npz"
 
 
 def download_weather(region, start_date, end_date, cache_dir="data/weather", progress=None):
     """Fetch ERA5 hourly temperature and precipitation for every point in a region.
 
-    Dates are inclusive and times are UTC. Complete arrays and raw responses are
-    cached. A saved batch is reused after an interruption, never replaced by zeros.
+    Dates are inclusive and times are UTC. Returns a dictionary with the time axis,
+    both weather arrays (locations x hours) and the requested and returned coordinates.
+    Complete arrays and raw responses are saved and reused.
     """
-    locations_path = Path("data/weather_locations.json")
-    coordinates = json.loads(locations_path.read_text())
+    coordinates = json.loads(Path("data/weather_locations.json").read_text())
     if region not in coordinates:
         raise ValueError(f"Unknown region: {region}")
-    start, end = pd.Timestamp(start_date), pd.Timestamp(end_date)
-    if start.tzinfo is not None or end.tzinfo is not None or start != start.normalize() or end != end.normalize():
-        raise ValueError("Use dates without time or timezone, in YYYY-MM-DD format.")
-    if end < start or (end - start).days > 366:
-        raise ValueError("Select an ordered period of at most 367 days.")
     requested = np.asarray(coordinates[region], dtype=float)
-    if requested.shape != (1000, 2) or not np.isfinite(requested).all():
-        raise ValueError("Each region must contain 1000 valid longitude/latitude pairs.")
+    start, end = pd.Timestamp(start_date), pd.Timestamp(end_date)
+    # Include all hours of the final day, without including midnight of the next day.
     expected_time = pd.date_range(start, end + pd.Timedelta(days=1), inclusive="left", freq="h", tz="UTC")
-    identity = {
-        "region": region, "start_date": start.strftime("%Y-%m-%d"),
-        "end_date": end.strftime("%Y-%m-%d"), "model": "era5",
-        "variables": WEATHER_VARIABLES, "timezone": "GMT",
-        "coordinates": requested.tolist(), "cell_selection": "land"
-    }
-    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16]
-    cache_dir = Path(cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    array_path = cache_dir / f"{region}_{start:%Y%m%d}_{end:%Y%m%d}_{digest}.npz"
-    if array_path.exists():
-        with np.load(array_path, allow_pickle=False) as saved:
+    array_path = weather_cache_file(region, start, end, cache_dir)
+    saved_before = array_path.exists()
+    # Prefer complete saved arrays. Otherwise build them from batches of 20 locations.
+    if saved_before:
+        with np.load(array_path) as saved:
             result = {key: saved[key] for key in saved.files}
         if not np.array_equal(result["requested_coordinates"], requested):
             raise ValueError("Saved coordinates do not match the request.")
     else:
-        temperature = np.empty((1000, len(expected_time)), dtype=np.float32)
+        # Rows are locations and columns are hours. Returned grid metadata are kept separately.
+        temperature = np.empty((len(requested), len(expected_time)), dtype=np.float32)
         precipitation = np.empty_like(temperature)
-        returned = np.empty((1000, 3), dtype=float)
+        returned = np.empty((len(requested), 3), dtype=float)
         batch_size = 20
         for offset in range(0, len(requested), batch_size):
             batch = requested[offset:offset + batch_size]
+            # Stored pairs are longitude/latitude. The API expects separate named lists.
             params = {
                 "latitude": ",".join(str(value) for value in batch[:, 1]),
                 "longitude": ",".join(str(value) for value in batch[:, 0]),
-                "start_date": identity["start_date"], "end_date": identity["end_date"],
+                "start_date": start.strftime("%Y-%m-%d"), "end_date": end.strftime("%Y-%m-%d"),
                 "hourly": ",".join(WEATHER_VARIABLES), "models": "era5", "timezone": "GMT",
                 "cell_selection": "land", "temperature_unit": "celsius", "precipitation_unit": "mm"
             }
-            payload = _request_weather(params, cache_dir / "raw", progress)
-            records = payload if isinstance(payload, list) else [payload]
-            if len(records) != len(batch):
-                raise ValueError("Open-Meteo returned the wrong number of locations.")
-            for position, record in enumerate(records):
-                if record.get("location_id", position) != position:
-                    raise ValueError("Unexpected location order in the response.")
+            records = _request_weather(params, Path(cache_dir) / "raw")
+            # Check each location before placing its observations in the full arrays.
+            for index, record in enumerate(records, start=offset):
                 hourly = record["hourly"]
-                actual_time = pd.DatetimeIndex(pd.to_datetime(hourly["time"], utc=True))
-                if not actual_time.equals(expected_time) or record["utc_offset_seconds"] != 0:
-                    raise ValueError("Hourly timestamps or timezone do not match the request.")
+                if not pd.to_datetime(hourly["time"], utc=True).equals(expected_time):
+                    raise ValueError("Hourly timestamps do not match the request.")
                 units = record["hourly_units"]
                 if units["temperature_2m"] != "°C" or units["precipitation"] != "mm":
                     raise ValueError("Unexpected weather units.")
-                index = offset + position
                 temperature[index] = hourly["temperature_2m"]
                 precipitation[index] = hourly["precipitation"]
                 returned[index] = [record["longitude"], record["latitude"], record["elevation"]]
             if progress:
-                progress(f"{region}: {offset + len(batch)}/1000 locations checked.")
+                progress(f"{region}: {offset + len(batch)}/{len(requested)} locations checked.")
         result = {
             "time_ns": expected_time.asi8, "temperature_2m": temperature,
             "precipitation": precipitation, "requested_coordinates": requested,
             "returned_coordinates_elevation": returned,
         }
-        if not np.isfinite(temperature).all() or not np.isfinite(precipitation).all():
-            raise ValueError("Weather data contain missing or non-finite values. Inspect the raw responses.")
-        if (precipitation < 0).any():
-            raise ValueError("Negative precipitation returned by the API.")
-        with tempfile.NamedTemporaryFile(dir=cache_dir, suffix=".tmp", delete=False) as target:
-            temporary = Path(target.name)
-            np.savez_compressed(target, **result)
-        temporary.replace(array_path)
+    # Apply the same shape, missing-value and time checks to loaded and downloaded data.
     for variable in WEATHER_VARIABLES:
-        if result[variable].shape != (1000, len(expected_time)) or not np.isfinite(result[variable]).all():
-            raise ValueError(f"Incomplete saved data for {variable}.")
+        if result[variable].shape != (len(requested), len(expected_time)) or not np.isfinite(result[variable]).all():
+            raise ValueError(f"Incomplete data for {variable}.")
     if not np.array_equal(result["time_ns"], expected_time.asi8):
-        raise ValueError("Saved time axis does not match the period.")
+        raise ValueError("Time axis does not match the period.")
+    # Save the NPZ only after all locations have passed the checks.
+    if not saved_before:
+        np.savez_compressed(array_path, **result)
     return result
 
 
 def weather_mean(weather):
     """Equal-area Monte Carlo mean across all 1000 sampled points, for each hour."""
+    # axis=0 averages locations, leaving one value per hour. Use float64 for the mean.
     return pd.DataFrame({
         variable: weather[variable].mean(axis=0, dtype=np.float64)
         for variable in WEATHER_VARIABLES
     }, index=pd.DatetimeIndex(pd.to_datetime(weather["time_ns"], utc=True), name="time"))
-
-
-def weather_summary_file(region, year, cache_dir="data/weather"):
-    """Identify a summary by area, year, model and the exact sampled coordinates."""
-    coordinates = json.loads(Path("data/weather_locations.json").read_text())[region]
-    sample_hash = hashlib.sha256(json.dumps(coordinates).encode()).hexdigest()[:12]
-    return Path(cache_dir) / f"{region}_{year}_era5_{sample_hash}_hourly.csv.gz"
 
 
 import matplotlib.dates as mdates
@@ -208,22 +136,24 @@ from statsmodels.tsa.seasonal import STL
 
 def _regular_series(series, step, minimum):
     """Reject gaps and non-finite inputs rather than silently changing the data."""
+    # Sort without filling gaps or combining duplicate timestamps.
     series = series.astype(float).sort_index()
     if not isinstance(series.index, pd.DatetimeIndex) or series.index.has_duplicates:
         raise ValueError("Use a unique DatetimeIndex.")
     if len(series) < minimum or not np.isfinite(series.to_numpy()).all():
         raise ValueError(f"At least {minimum} finite observations are required.")
+    # Compare adjacent timestamps in nanoseconds with the required time step.
     if not np.all(np.diff(series.index.asi8) == pd.Timedelta(step).value):
         raise ValueError(f"Observations must be regularly spaced by {step}, without gaps.")
     return series
 
 
 def _date_axis(axis):
+    # Choose a small number of date labels that adapt to the displayed period.
     locator = mdates.AutoDateLocator(minticks=4, maxticks=8)
     axis.xaxis.set_major_locator(locator)
     axis.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
     axis.grid(alpha=0.2)
-
 
 def precipitation_spc(series, cutoff_days=30.0, deviations=3.0, title="NO3 precipitation"):
     """DCT high-pass residuals define robust limits on the original rainfall scale."""
@@ -235,16 +165,16 @@ def precipitation_spc(series, cutoff_days=30.0, deviations=3.0, title="NO3 preci
     coefficients = dct(values, type=1, norm="forward")
     frequencies = np.arange(len(values)) / (2 * (len(values) - 1))
     high_pass = coefficients.copy()
+    # Convert the cutoff from days to cycles/hour and remove slower components.
     high_pass[frequencies < 1 / (24 * cutoff_days)] = 0
     residual = idct(high_pass, type=1, norm="forward")
-    # Suppress floating-point noise for constant signals.
-    tolerance = 100 * np.finfo(float).eps * max(1, np.max(np.abs(values)))
-    residual[np.abs(residual) < tolerance] = 0
+    # Add robust residual limits back to the smooth baseline, in the original units.
     baseline = values - residual
     center = np.median(residual)
     robust_sigma = median_abs_deviation(residual, scale="normal")
     lower = baseline + center - deviations * robust_sigma
     upper = baseline + center + deviations * robust_sigma
+    # Keep every observation. The Boolean mask only marks values outside the limits.
     mask = (values < lower) | (values > upper)
     result = pd.DataFrame({"precipitation": values, "lower_limit": lower,
                            "upper_limit": upper, "outlier": mask}, index=series.index)
@@ -254,6 +184,7 @@ def precipitation_spc(series, cutoff_days=30.0, deviations=3.0, title="NO3 preci
         "cutoff_days": cutoff_days, "deviations": deviations,
         "maximum_hourly_precipitation_mm": values.max(),
     }
+    # Plot the original rainfall, limits and flags, without plotting the residual.
     fig = Figure(figsize=(11, 4))
     ax = fig.subplots()
     ax.plot(series.index, values, color="#397FA3", linewidth=0.6, label="Mean precipitation")
@@ -273,11 +204,15 @@ def temperature_lof(series, contamination=0.01, neighbors=20, title="NO3 tempera
     series = _regular_series(series, "1h", 48)
     if not 0 < contamination <= 0.5 or not 2 <= neighbors < len(series) - 1:
         raise ValueError("Use contamination in (0, 0.5] and a valid neighbour count.")
+    # Pair each temperature with its hourly change. The first hour has no pair.
     features = pd.DataFrame({"temperature": series, "hourly_change": series.diff()}).iloc[1:]
+    # Put both features on comparable scales before measuring neighbour distances.
     scaled = StandardScaler().fit_transform(features)
     model = LocalOutlierFactor(n_neighbors=neighbors, contamination=contamination)
     labels = model.fit_predict(scaled)
+    # Retain the full time axis, including the unscored first hour.
     result = pd.DataFrame({"temperature": series, "lof_score": np.nan, "anomaly": False})
+    # Reverse sklearn’s score sign so higher scores mean more unusual combinations.
     result.loc[features.index, "lof_score"] = -model.negative_outlier_factor_
     result.loc[features.index, "anomaly"] = labels == -1
     mask = result["anomaly"]
@@ -287,6 +222,7 @@ def temperature_lof(series, contamination=0.01, neighbors=20, title="NO3 tempera
         "contamination": contamination, "neighbors": neighbors,
         "score_threshold": -model.offset_,
     }
+    # Show flags on the original temperature curve, not on the standardised features.
     fig = Figure(figsize=(11, 4))
     ax = fig.subplots()
     ax.plot(series.index, series, color="#397FA3", linewidth=0.6, label="Mean temperature")
@@ -304,11 +240,14 @@ def reservoir_stl(series, seasonal=7, trend=105, robust=True, title="NO3 reservo
     series = _regular_series(series, "7d", 104)
     if seasonal < 7 or seasonal % 2 != 1 or trend <= 52 or trend % 2 != 1:
         raise ValueError("Seasonal must be odd and at least 7; trend must be odd and greater than 52.")
+    # Estimate the three additive components using a 52-observation annual cycle.
     fitted = STL(series, period=52, seasonal=seasonal, trend=trend, robust=robust).fit()
+    # Keep all components aligned with the input dates for plotting and reconstruction.
     components = pd.DataFrame({"observed": series, "trend": fitted.trend,
                                "seasonal": fitted.seasonal, "residual": fitted.resid})
     fig = Figure(figsize=(11, 8))
     axes = fig.subplots(4, 1, sharex=True)
+    # Levels use percent. Seasonal and residual deviations use percentage points.
     for ax, column in zip(axes, components.columns):
         ax.plot(components.index, components[column], linewidth=0.9, color="#397FA3")
         ax.set_ylabel("Filling (%)" if column == "observed" else
@@ -326,12 +265,16 @@ def reservoir_spectrogram(series, window=104, overlap=78, title="NO3 filling spe
     series = _regular_series(series, "7d", 104)
     if not 8 <= window <= len(series) or not 0 <= overlap < window:
         raise ValueError("Window must be between 8 and the series length; overlap must be smaller.")
+    # Weekly sampling expressed per year makes the frequency axis cycles/year.
     samples_per_year = 365.2425 / 7
+    # Remove each window’s mean and use only complete windows, without zero padding.
     frequencies, times, spectrum = stft(
         series.to_numpy(), fs=samples_per_year, window="hann", nperseg=window,
         noverlap=overlap, detrend="constant", boundary=None, padded=False
     )
+    # STFT times are in years with this sampling rate. Convert them to calendar dates.
     dates = series.index[0] + pd.to_timedelta(times * 365.2425, unit="D")
+    # Plot coefficient magnitudes rather than complex values or squared power.
     magnitude = np.abs(spectrum)
     fig = Figure(figsize=(11, 6))
     axes = fig.subplots(2, 1, sharex=True)
@@ -344,6 +287,7 @@ def reservoir_spectrogram(series, window=104, overlap=78, title="NO3 filling spe
     _date_axis(axes[1])
     fig.colorbar(mesh, ax=axes, label="STFT magnitude (pp)", fraction=0.03, pad=0.02)
     fig.subplots_adjust(left=0.09, right=0.85, bottom=0.1, top=0.94, hspace=0.18)
+    # Ignore zero frequency when finding the strongest average oscillation.
     summary = {"window_weeks": window, "overlap_weeks": overlap,
                "frequency_resolution_cycles_per_year": samples_per_year / window,
                "windows": len(times),

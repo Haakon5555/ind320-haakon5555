@@ -5,7 +5,7 @@ import requests
 import streamlit as st
 
 from data_loader import select_data, select_analysis_area
-from data_quality import download_weather, weather_mean, weather_summary_file, precipitation_spc, temperature_lof
+from data_quality import download_weather, weather_mean, weather_cache_file, precipitation_spc, temperature_lof
 
 st.set_page_config(page_title="IND320 - Weather quality", layout="wide")
 st.title("Weather data quality")
@@ -35,35 +35,37 @@ if area_type == "VASS":
         "Weather uses the three region groups specified in the course. These administrative polygons "
         "are approximations, not individual reservoir catchments or the four groups in NVE's current catalogue."
     )
-summary_path = weather_summary_file(region, year)
+start_date, end_date = f"{year}-01-01", f"{year}-12-31"
+cache_path = weather_cache_file(region, start_date, end_date)
 st.write(f"{region}, {year}: hourly ERA5 temperature and precipitation averaged over 1000 sampled locations.")
 st.caption("SPC limits and LOF are fitted to the full year. The charts and event tables show the months selected in the sidebar.")
-if not summary_path.exists():
-    st.info("These weather data have not been prepared yet. A full-year download may take over an hour because of API limits. Completed batches are reused after interruption.")
+if not cache_path.exists():
+    st.info("These weather data have not been prepared yet. A full-year download can use up the hourly API quota. If it stops, press the button again later. Completed batches are reused.")
     if not st.button(f"Download {year} weather for {region}", type="primary"):
         st.stop()
     progress = st.empty()
     try:
         with st.spinner("Retrieving weather data…"):
-            weather = download_weather(region, f"{year}-01-01", f"{year}-12-31", progress=progress.info)
-            hourly = weather_mean(weather)
-            summary_path.parent.mkdir(parents=True, exist_ok=True)
-            hourly.to_csv(summary_path, compression="gzip")
+            download_weather(region, start_date, end_date, progress=progress.info)
         progress.success("All 1000 locations are complete.")
     except (requests.RequestException, ValueError, RuntimeError, OSError) as error:
         st.error(f"Weather download stopped: {error}")
         st.stop()
 
 @st.cache_data(max_entries=8)
-def read_hourly(path, modified):
-    frame = pd.read_csv(path, index_col="time", parse_dates=["time"])
-    frame.index = pd.to_datetime(frame.index, utc=True)
-    return frame
+def read_hourly(region, year, path, modified):
+    # Cache only the small hourly table. The NPZ path and timestamp detect changes.
+    weather = download_weather(region, f"{year}-01-01", f"{year}-12-31")
+    return weather_mean(weather)
 
-hourly = read_hourly(str(summary_path), summary_path.stat().st_mtime_ns)
+try:
+    hourly = read_hourly(region, year, str(cache_path), cache_path.stat().st_mtime_ns)
+except (requests.RequestException, ValueError, RuntimeError, OSError) as error:
+    st.error(f"Could not read the saved weather data: {error}")
+    st.stop()
 expected = pd.date_range(f"{year}-01-01", f"{year+1}-01-01", inclusive="left", freq="h", tz="UTC")
 if not hourly.index.equals(expected) or hourly.isna().any().any():
-    st.error("The saved weather summary is incomplete. Recreate it from the checked point data.")
+    st.error("The saved weather data are incomplete. Check the NPZ file and its source responses.")
     st.stop()
 view_start, view_end = start.tz_localize("UTC"), end.tz_localize("UTC")
 spc_tab, lof_tab = st.tabs(["Precipitation / SPC", "Temperature / LOF"])
