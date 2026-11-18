@@ -167,10 +167,8 @@ def select_analysis_area(selected, area_type):
     saved_number = st.session_state.get(f"chosen_number_{area_type}", default_number)
     number = saved_number if saved_number in numbers else numbers[0]
     widget_key = f"analysis_area_{area_type}"
-    if st.session_state.get(widget_key) != number:
-        st.session_state[widget_key] = number
     number = st.sidebar.selectbox(
-        "Area", numbers,
+        "Area", numbers, index=numbers.index(number),
         format_func=lambda value: f"NO{value}" if area_type == "EL" else f"{area_type} {value}",
         key=widget_key,
         on_change=_save_analysis_area, args=(area_type, widget_key),
