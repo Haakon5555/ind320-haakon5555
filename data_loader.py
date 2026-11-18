@@ -62,7 +62,8 @@ def select_data():
     chosen_type = st.session_state.get("chosen_area_type", "NO")
     if chosen_type not in area_types:
         chosen_type = area_types[0]
-    st.session_state["area_type_control"] = chosen_type
+    if st.session_state.get("area_type_control") != chosen_type:
+        st.session_state["area_type_control"] = chosen_type
     with st.sidebar:
         area_type = st.radio(
             "Area type", area_types, key="area_type_control",
@@ -156,23 +157,25 @@ def transfer_months(connection, year, months):
 
 
 def _save_analysis_area(area_type, widget_key):
-    st.session_state["chosen_area"] = (area_type, st.session_state[widget_key])
+    st.session_state[f"chosen_number_{area_type}"] = st.session_state[widget_key]
 
 
 def select_analysis_area(selected, area_type):
     """Share one area number between the reservoir and weather analysis pages."""
     numbers = sorted(int(number) for number in selected["area_number"].unique())
-    saved_type, saved_number = st.session_state.get("chosen_area", ("EL", 3))
-    number = saved_number if saved_type == area_type and saved_number in numbers else numbers[0]
+    default_number = 3 if area_type == "EL" else numbers[0]
+    saved_number = st.session_state.get(f"chosen_number_{area_type}", default_number)
+    number = saved_number if saved_number in numbers else numbers[0]
     widget_key = f"analysis_area_{area_type}"
-    st.session_state[widget_key] = number
+    if st.session_state.get(widget_key) != number:
+        st.session_state[widget_key] = number
     number = st.sidebar.selectbox(
         "Area", numbers,
         format_func=lambda value: f"NO{value}" if area_type == "EL" else f"{area_type} {value}",
         key=widget_key,
         on_change=_save_analysis_area, args=(area_type, widget_key),
     )
-    st.session_state["chosen_area"] = (area_type, number)
+    st.session_state[f"chosen_number_{area_type}"] = number
     if area_type == "EL":
         region = f"NO{number}"
     elif area_type == "VASS":
