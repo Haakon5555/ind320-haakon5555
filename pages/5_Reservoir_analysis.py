@@ -13,7 +13,7 @@ if st.button("Use NO3, 2015–2024"):
     st.session_state["chosen_area_type"] = "EL"
     st.session_state["area_type_control"] = "EL"
     st.session_state["chosen_number_EL"] = 3
-    st.session_state["analysis_area_EL"] = 3
+    st.session_state.pop("analysis_area_EL", None)
     st.session_state["chosen_months"] = ("2015-01", "2024-12")
     st.session_state.pop("period_control", None)
 selected, area_type, start, end = select_data()
